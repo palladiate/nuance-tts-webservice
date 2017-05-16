@@ -1,0 +1,230 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+
+use IO::Socket;
+use Data::Dumper;
+use POSIX;
+
+my $port = 9000;
+my $root = $ENV{'HOME'};
+$root .= '/ttsserver/webroot';
+my $maxchildren = 10;
+my $maxlifetime = 5;
+my %children = ();
+my $childcount = 0;
+my $shutdown = 0;
+my $runoption = lc($ARGV[0]) if defined $ARGV[0];
+my $loglevel = 5;
+
+if ( not defined $runoption ) {
+	print "\nNo options given, options are start, stop, and status\n";
+	exit(0);
+}
+ 
+if ( $runoption eq 'stop' ) {
+	open my $pidfile, '<', 'prefork.pid' or die "Can't kill that which cannot die!\n";
+	my $pid = <$pidfile>;
+	close $pidfile;
+	kill 'INT', $pid;
+	unlink 'prefork.pid';
+	exit(0);
+}
+
+if ( $runoption eq 'status' ) {
+	open my $pidfile, '<', 'prefork.pid';
+	my $pid = <$pidfile>;
+	close $pidfile;
+	my $status = kill 'HUP', $pid; 
+	print "\nService returned with $status\n";
+	exit(0);
+}
+
+if ( $runoption ne 'start' ) {
+	print "\nOptions are start, stop, and status\n";
+	exit(0);
+}
+if (open my $parentpid, '<', 'prefork.pid' ) {
+	my $pid = <$parentpid>;
+	if (kill 'SIGZERO', $pid) {
+		print "\nProcess is already running, process id $pid\n";
+		exit(0);
+	}
+	close $parentpid;
+}
+# Begin daemon
+fork and exit(0);
+POSIX::setsid;
+fork and exit(0);
+umask 0;
+Log("Starting",1);
+print "\nStarting\n";
+
+my $webserver = new IO::Socket::INET(
+	Proto 		=> 'tcp',
+	LocalPort	=> $port,
+	Listen		=> SOMAXCONN,
+	Reuse		=> 1
+) or die "\nNo server created, check port in use!\n";
+
+open my $parentpid, '>', 'prefork.pid';
+print $parentpid $$;
+close $parentpid;
+
+Log("Server started on port $port, max helpers $maxchildren, max lifetime $maxlifetime",1);
+
+$SIG{CHLD} = sub {
+	local ($1, $?);
+	while (  ( my $pid = waitpid(-1, WNOHANG)) > 0 ) {
+		delete $children{$pid};
+		Log("Bathwater for $pid!",2);
+		$childcount -= 1;
+	}
+};
+
+$SIG{INT} = sub {
+	local($SIG{CHLD}) = 'IGNORE';
+	kill 'INT' => keys %children;
+	exit(0);
+};
+
+$SIG{HUP} = sub {
+	Log("HUP!",1);
+};
+
+for (1..$maxchildren) { MakeChild(); }
+
+while (not $shutdown) {
+	sleep;
+	while ($childcount < $maxchildren) { 
+		MakeChild(); 
+	}
+}
+exit(0);
+
+sub MakeChild {
+	my $pid;
+	my $sig = POSIX::SigSet->new(SIGINT);
+	sigprocmask(SIG_BLOCK, $sig) or die "Can't block Signal\n";
+	$pid = fork;
+	if ($pid) {
+		sigprocmask(SIG_UNBLOCK,$sig);
+		$children{$pid} = 1;
+		$childcount += 1;
+		Log("Making child $pid",2);
+		return;
+		
+	} else {
+		open my $log, '>>', 'lprefork.log';
+		$SIG{INT} = 'DEFAULT';
+		sigprocmask(SIG_UNBLOCK,$sig);
+		my $connection = 0;
+		while ( $connection < $maxlifetime ) {
+			my $client = $webserver->accept(); 
+			$client->autoflush(1);
+			my %request, my %data;
+			local $/ = Socket::CRLF;
+			while ( my $line = <$client> ) {
+				chomp $line;
+				%request = ParseRequest($line);
+				last;
+			}
+			if ( defined $request{path} && $request{path} eq '/voice' ) {
+				my $say = 'This is a test';
+				my $language = 'en-US';
+				my $voice = 'Samantha'; 
+				my $wavfile = "perl-$$.wav";
+
+				if ( defined $request{query}->{text} ) { 
+					$say = $request{query}->{text}; 
+				}
+				if (defined $request{query}->{language} ) {
+					$language = $request{query}->{language};
+				}
+				if (defined $request{query}->{voice} ) {
+					$voice = $request{query}->{voice};
+				}
+				system("nvncmdline -w -l $language -n $voice -o $wavfile -s '$say'");
+				open my $file, '<', $wavfile;
+				binmode($file);
+				print $client "HTTP/1.0 200 OK", Socket::CRLF;
+				print $client "Content-type: audio/wav", Socket::CRLF;
+				print $client Socket::CRLF;
+				while (my $data = <$file>) {
+					print $client $data;
+				}
+				print $client Socket::CRLF;
+				close $file;
+
+			} else {
+				if (open my $doc, '<', $root.$request{path}) {
+					print $client "HTTP/1.0 200 OK", Socket::CRLF;
+					print $client "Content-type: text/html", Socket::CRLF;
+					print $client Socket::CRLF;
+					while (read($doc,my $line, 2048)) {
+						print $client $line;
+					}
+					close $doc;
+				} else {
+					print $client "HTTP/1.0 404 NOT FOUND", Socket::CRLF;
+				}
+			}
+			Log("$$, $request{all} 200");
+			$connection += 1;
+			close $client;
+		}
+		close $log;	
+		exit(0);
+	}
+}
+
+sub ParseRequest {
+	my $line = shift;
+	my %request = ();
+
+	if ( $line =~ m/\s*(\w+)\s*(\/[^\s]+)\s*(HTTPS?)\/([\d\\.]*)/ ) {
+		$request{method} = $1;
+		$request{protocol} = $3;
+		$request{url} = $2;
+		$request{version} = $4;
+	}
+
+	if ( defined $request{url} && $request{url} =~ m/([^\?]+)\?(.*)/ ) {
+		$request{path} = $1;
+		$request{rawquery} = $2;
+	} else {
+		$request{path} = $request{url};
+	}	
+	
+	if ( defined $request{rawquery} ) {
+		my @params = split('&', $request{rawquery} );
+		for my $param (@params) {
+			my @sparam = split('=',$param);
+			if (defined $sparam[1]) {
+				$sparam[1] =~ s/\+/ /g;
+			}
+			$request{query}->{$sparam[0]} = $sparam[1];
+		}
+	}
+
+	$request{all} = $line;
+	return %request;
+}
+
+
+sub Log {
+    my $log = 'ttsserver.log';
+    my $message = shift;
+    my $priority = shift;
+    local($|);
+    $| = 1;
+    $priority = '5' if not defined $priority;
+    open my $logfile, '>>', $log;
+    my $curtime = time;
+    if ( $priority <= $loglevel ) {
+        print $logfile "$curtime : $priority: $message\n";
+    }
+    close $logfile;
+    $| = 0;
+}
