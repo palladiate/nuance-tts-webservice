@@ -18,6 +18,10 @@ my $shutdown = 0;
 my $runoption = lc($ARGV[0]) if defined $ARGV[0];
 my $loglevel = 5;
 
+$ENV{'VNETWORKV5_VOICE_PATH'} = '/product/Nuance/Vocalizer_for_Network_5.0:/product/languages/';
+$ENV{'VNETWORKV5_USERCFG'} = '/export/home/E082569/tts_config.xml';
+$ENV{'VNETWORKV5_SDK'} = '/product/Nuance/Vocalizer_for_Network';
+
 if ( not defined $runoption ) {
 	print "\nNo options given, options are start, stop, and status\n";
 	exit(0);
