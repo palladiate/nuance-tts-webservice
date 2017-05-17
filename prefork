@@ -203,6 +203,8 @@ sub ParseRequest {
 			my @sparam = split('=',$param);
 			if (defined $sparam[1]) {
 				$sparam[1] =~ s/\+/ /g;
+				$sparam[1] =~ s/%20/ /g;
+				$sparam[1] =~ s/%2b/ /g;
 			}
 			$request{query}->{$sparam[0]} = $sparam[1];
 		}
