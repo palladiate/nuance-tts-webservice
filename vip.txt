@@ -1,0 +1,4 @@
+Tom, American English Tom 8kHz, 5.2.2.8275, en-us, ENU, Adult, Male, full_encryptf8
+Samantha, American English Samantha 8kHz, 5.2.3.11210, en-us, ENU, Adult, Female, full_encryptf8
+Paulina, Mexican Spanish Paulina 8kHz, 5.2.1.9138, es-mx, SPM, Adult, Female, full_encryptf8
+Paulina, United States Spanish Paulina 8kHz, 5.2.1.9138, es-us, SPM, Adult, Female, full_encryptf8

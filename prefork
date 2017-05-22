@@ -134,6 +134,7 @@ sub MakeChild {
 				%request = ParseRequest($line);
 				last;
 			}
+			my $status = 200;
 			if ( defined $request{path} && $request{path} eq '/voice' ) {
 				my $say = 'This is a test';
 				my $language = 'en-US';
@@ -152,6 +153,7 @@ sub MakeChild {
 				system("nvncmdline -w -l $language -n $voice -o $wavfile -s '$say'");
 				open my $file, '<', $wavfile;
 				binmode($file);
+				
 				print $client "HTTP/1.0 200 OK", Socket::CRLF;
 				print $client "Content-type: audio/wav", Socket::CRLF;
 				print $client Socket::CRLF;
@@ -161,6 +163,25 @@ sub MakeChild {
 				print $client Socket::CRLF;
 				close $file;
 
+			} elsif ( defined $request{path} && $request{path} eq '/vip' ) {
+				my %health = HealthCheck();
+				print Dumper \%health;
+				if ( $health{status} == 2 ) {
+					print $client "\nSERVICE IS DISABLED";
+				} elsif ( $health{status} == 1 ) { 
+					print $client "HTTP/1.0 200 OK", Socket::CRLF;
+					print $client "Content-type: text/plain", Socket::CRLF;
+					print $client Socket::CRLF;
+					print $client "OK\n";
+					print $client $health{message};
+				} else {
+					$status = 500;
+					print $client "HTTP/1.0 500 NOT OK", Socket::CRLF;
+					print $client "Content-type: text/plain", Socket::CRLF;
+					print $client Socket::CRLF;
+					print $client "NOT OK\n";
+					print $client $health{message};
+				}  	
 			} else {
 				if (open my $doc, '<', $root.$request{path}) {
 					print $client "HTTP/1.0 200 OK", Socket::CRLF;
@@ -171,10 +192,12 @@ sub MakeChild {
 					}
 					close $doc;
 				} else {
+					$status = 404;
 					print $client "HTTP/1.0 404 NOT FOUND", Socket::CRLF;
 				}
 			}
-			Log("$$, $request{all} 200");
+			my $peer = $client->peerhost
+			Log("$$, $peer, $request{all} $status");
 			$connection += 1;
 			close $client;
 		}
@@ -218,6 +241,42 @@ sub ParseRequest {
 	return %request;
 }
 
+sub HealthCheck {
+	my %health = (
+		status => 1,
+		message => ''
+	);
+	my @checks;
+	local $/ = "\n";
+	if (open my $vip, '<', 'vip.txt') {
+		while (my $line = <$vip>) {
+			my @ops = split(',',$line);
+			my %flags = (
+				language        => $ops[3],
+				voice           => $ops[0],
+				name            => $ops[1],
+				version         => $ops[2],
+				wavfile         => "vip-$ops[0]-$ops[3].wav"
+			);
+			my $status = system("nvncmdline -w -l $flags{language} -n $flags{voice} -o $flags{wavfile} -s '$flags{name} voice version $flags{version}'");
+			if ($status) {
+				$health{message} .= "$flags{voice}, $flags{language} failed to generate\n";
+				$health{$flags{name}} = 'NOT OK';
+				$health{status} = 0;
+			} else {
+				$health{$flags{name}} = 'OK';
+				$health{message} .= "$flags{voice}, $flags{language} generated successfully\n"; 
+			}
+		}
+	} else {
+		$health{status} = 0;
+		$health{message} = 'NO CONFIG FILE TO TEST STATUS';
+		return %health;
+	}
+
+	if ($health{status} == 1) {  }
+	return %health;
+}
 
 sub Log {
     my $log = 'ttsserver.log';
